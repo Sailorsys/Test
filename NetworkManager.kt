@@ -1,5 +1,9 @@
 package com.master.aistudio
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.*
@@ -10,173 +14,200 @@ import java.util.concurrent.TimeUnit
 
 object NetworkManager {
 
-// رابط الـ Space الجديد بدل رابط Lightning
-private const val BASE_URL = "https://xudress8-image-to-prompts.hf.space/"
+    // رابط الـ Space الجديد بدل رابط Lightning
+    private const val BASE_URL = "https://xudress8-image-to-prompts.hf.space/"
 
-// توكين القراءة فقط اللي عملته من huggingface.co/settings/tokens
-// (استبدل القيمة دي بالتوكين بتاعك فعليًا)
-private const val HF_TOKEN = "my token "
+    // توكين القراءة فقط اللي عملته من huggingface.co/settings/tokens
+    // (استبدل القيمة دي بالتوكين بتاعك فعليًا)
+    private const val HF_TOKEN = "my token"
 
-// Interceptor بيضيف الـ Authorization header تلقائيًا لكل طلب بيتبعت،
-// من غير ما نضطر نكرر نفس الكود في كل دالة على حدة
-private val authInterceptor = Interceptor { chain ->
-val original = chain.request()
-val requestWithAuth = original.newBuilder()
-.addHeader("Authorization", "Bearer $HF_TOKEN")
-.build()
-chain.proceed(requestWithAuth)
-}
+    // Interceptor بيضيف الـ Authorization header تلقائيًا لكل طلب بيتبعت،
+    // من غير ما نضطر نكرر نفس الكود في كل دالة على حدة
+    private val authInterceptor = Interceptor { chain ->
+        val original = chain.request()
+        val requestWithAuth = original.newBuilder()
+        .addHeader("Authorization", "Bearer $HF_TOKEN")
+        .build()
+        chain.proceed(requestWithAuth)
+    }
 
-private val client = OkHttpClient.Builder()
-.addInterceptor(authInterceptor)
-.connectTimeout(60, TimeUnit.SECONDS)
-.readTimeout(180, TimeUnit.SECONDS)
-.writeTimeout(180, TimeUnit.SECONDS)
-.build()
+    private val client = OkHttpClient.Builder()
+    .addInterceptor(authInterceptor)
+    .connectTimeout(60, TimeUnit.SECONDS)
+    .readTimeout(180, TimeUnit.SECONDS)
+    .writeTimeout(180, TimeUnit.SECONDS)
+    .build()
 
-// 1. تحسين الوجه (CodeFormer)
-suspend fun enhanceFace(imageFile: File): ByteArray? = withContext(Dispatchers.IO) {
-val requestBody = MultipartBody.Builder()
-.setType(MultipartBody.FORM)
-.addFormDataPart(
-"file",
-imageFile.name,
-RequestBody.create("image/jpeg".toMediaTypeOrNull(), imageFile)
-)
-.build()
+    // 1. تحسين الوجه (CodeFormer)
+    suspend fun enhanceFace(imageFile: File): ByteArray? = withContext(Dispatchers.IO) {
+        val requestBody = MultipartBody.Builder()
+        .setType(MultipartBody.FORM)
+        .addFormDataPart(
+            "file",
+            imageFile.name,
+            RequestBody.create("image/jpeg".toMediaTypeOrNull(), imageFile)
+        )
+        .build()
 
-val request = Request.Builder()
-.url("${BASE_URL}api/v1/enhance-face")
-.post(requestBody)
-.build()
+        val request = Request.Builder()
+        .url("${BASE_URL}api/v1/enhance-face")
+        .post(requestBody)
+        .build()
 
-executeRequest(request)
-}
+        executeRequest(request)
+    }
 
-// 2. تحسين الصورة الكاملة (Real-ESRGAN)
-suspend fun enhanceFull(imageFile: File): ByteArray? = withContext(Dispatchers.IO) {
-val requestBody = MultipartBody.Builder()
-.setType(MultipartBody.FORM)
-.addFormDataPart(
-"file",
-imageFile.name,
-RequestBody.create("image/jpeg".toMediaTypeOrNull(), imageFile)
-)
-.build()
+    // 2. تحسين الصورة الكاملة (Real-ESRGAN)
+    suspend fun enhanceFull(imageFile: File): ByteArray? = withContext(Dispatchers.IO) {
+        val requestBody = MultipartBody.Builder()
+        .setType(MultipartBody.FORM)
+        .addFormDataPart(
+            "file",
+            imageFile.name,
+            RequestBody.create("image/jpeg".toMediaTypeOrNull(), imageFile)
+        )
+        .build()
 
-val request = Request.Builder()
-.url("${BASE_URL}api/v1/enhance-full")
-.post(requestBody)
-.build()
+        val request = Request.Builder()
+        .url("${BASE_URL}api/v1/enhance-full")
+        .post(requestBody)
+        .build()
 
-executeRequest(request)
-}
+        executeRequest(request)
+    }
 
-// 3️⃣ أ. معاينة التحديد بالرسم الحر / Bounding Box (جديدة)
-suspend fun segmentPreviewBox(
-imageFile: File,
-xMin: Int,
-yMin: Int,
-xMax: Int,
-yMax: Int
-): ByteArray? = withContext(Dispatchers.IO) {
-val requestBody = MultipartBody.Builder()
-.setType(MultipartBody.FORM)
-.addFormDataPart(
-"file",
-imageFile.name,
-RequestBody.create("image/jpeg".toMediaTypeOrNull(), imageFile)
-)
-.addFormDataPart("x_min", xMin.toString())
-.addFormDataPart("y_min", yMin.toString())
-.addFormDataPart("x_max", xMax.toString())
-.addFormDataPart("y_max", yMax.toString())
-.build()
+    // 3️⃣ أ. معاينة التحديد بالرسم الحر / Bounding Box (جديدة)
+    suspend fun segmentPreviewBox(
+        imageFile: File,
+        xMin: Int,
+        yMin: Int,
+        xMax: Int,
+        yMax: Int
+    ): ByteArray? = withContext(Dispatchers.IO) {
+        val requestBody = MultipartBody.Builder()
+        .setType(MultipartBody.FORM)
+        .addFormDataPart(
+            "file",
+            imageFile.name,
+            RequestBody.create("image/jpeg".toMediaTypeOrNull(), imageFile)
+        )
+        .addFormDataPart("x_min", xMin.toString())
+        .addFormDataPart("y_min", yMin.toString())
+        .addFormDataPart("x_max", xMax.toString())
+        .addFormDataPart("y_max", yMax.toString())
+        .build()
 
-val request = Request.Builder()
-.url("${BASE_URL}api/v1/segment-preview")
-.post(requestBody)
-.build()
+        val request = Request.Builder()
+        .url("${BASE_URL}api/v1/segment-preview")
+        .post(requestBody)
+        .build()
 
-executeRequest(request)
-}
+        executeRequest(request)
+    }
 
-// 3️⃣ ب. معاينة التحديد بلمس نقطة واحدة (القديمة)
-suspend fun segmentPreview(imageFile: File, x: Float, y: Float): ByteArray? = withContext(Dispatchers.IO) {
-val requestBody = MultipartBody.Builder()
-.setType(MultipartBody.FORM)
-.addFormDataPart(
-"file",
-imageFile.name,
-RequestBody.create("image/jpeg".toMediaTypeOrNull(), imageFile)
-)
-.addFormDataPart("x", x.toInt().toString())
-.addFormDataPart("y", y.toInt().toString())
-.build()
+    // 3️⃣ ب. معاينة التحديد بلمس نقطة واحدة (القديمة)
+    suspend fun segmentPreview(imageFile: File, x: Float, y: Float): ByteArray? = withContext(Dispatchers.IO) {
+        val requestBody = MultipartBody.Builder()
+        .setType(MultipartBody.FORM)
+        .addFormDataPart(
+            "file",
+            imageFile.name,
+            RequestBody.create("image/jpeg".toMediaTypeOrNull(), imageFile)
+        )
+        .addFormDataPart("x", x.toInt().toString())
+        .addFormDataPart("y", y.toInt().toString())
+        .build()
 
-val request = Request.Builder()
-.url("${BASE_URL}api/v1/segment-preview")
-.post(requestBody)
-.build()
+        val request = Request.Builder()
+        .url("${BASE_URL}api/v1/segment-preview")
+        .post(requestBody)
+        .build()
 
-executeRequest(request)
-}
+        executeRequest(request)
+    }
 
-// 4. إزالة العنصر (LaMa Inpainting)
-suspend fun inpaintObject(imageFile: File, maskFile: File): ByteArray? = withContext(Dispatchers.IO) {
-val requestBody = MultipartBody.Builder()
-.setType(MultipartBody.FORM)
-.addFormDataPart(
-"image_file",
-imageFile.name,
-RequestBody.create("image/jpeg".toMediaTypeOrNull(), imageFile)
-)
-.addFormDataPart(
-"mask_file",
-maskFile.name,
-RequestBody.create("image/png".toMediaTypeOrNull(), maskFile)
-)
-.build()
+    // 4. إزالة العنصر (LaMa Inpainting)
+    suspend fun inpaintObject(imageFile: File, maskFile: File): ByteArray? = withContext(Dispatchers.IO) {
+        val requestBody = MultipartBody.Builder()
+        .setType(MultipartBody.FORM)
+        .addFormDataPart(
+            "image_file",
+            imageFile.name,
+            RequestBody.create("image/jpeg".toMediaTypeOrNull(), imageFile)
+        )
+        .addFormDataPart(
+            "mask_file",
+            maskFile.name,
+            RequestBody.create("image/png".toMediaTypeOrNull(), maskFile)
+        )
+        .build()
 
-val request = Request.Builder()
-.url("${BASE_URL}api/v1/inpaint")
-.post(requestBody)
-.build()
+        val request = Request.Builder()
+        .url("${BASE_URL}api/v1/inpaint")
+        .post(requestBody)
+        .build()
 
-executeRequest(request)
-}
+        executeRequest(request)
+    }
 
-// 5. البورتريه (فصل الشخص وبلور الخلفية - RVM)
-suspend fun portraitBlur(imageFile: File, blurStrength: Int = 25): ByteArray? = withContext(Dispatchers.IO) {
-val requestBody = MultipartBody.Builder()
-.setType(MultipartBody.FORM)
-.addFormDataPart(
-"file",
-imageFile.name,
-RequestBody.create("image/jpeg".toMediaTypeOrNull(), imageFile)
-)
-.addFormDataPart("blur_strength", blurStrength.toString())
-.build()
+    // 5. البورتريه (فصل الشخص وبلور الخلفية - RVM)
+    suspend fun portraitBlur(imageFile: File, blurStrength: Int = 25): ByteArray? = withContext(Dispatchers.IO) {
+        val requestBody = MultipartBody.Builder()
+        .setType(MultipartBody.FORM)
+        .addFormDataPart(
+            "file",
+            imageFile.name,
+            RequestBody.create("image/jpeg".toMediaTypeOrNull(), imageFile)
+        )
+        .addFormDataPart("blur_strength", blurStrength.toString())
+        .build()
 
-val request = Request.Builder()
-.url("${BASE_URL}api/v1/portrait-blur")
-.post(requestBody)
-.build()
+        val request = Request.Builder()
+        .url("${BASE_URL}api/v1/portrait-blur")
+        .post(requestBody)
+        .build()
 
-executeRequest(request)
-}
+        executeRequest(request)
+    }
 
-private fun executeRequest(request: Request): ByteArray? {
-return try {
-val response = client.newCall(request).execute()
-if (response.isSuccessful) {
-response.body?.bytes()
-} else {
-null
-}
-} catch (e: IOException) {
-e.printStackTrace()
-null
-}
-}
+    private suspend fun executeRequest(request: Request): ByteArray? =
+    suspendCancellableCoroutine { continuation ->
+
+        val call = client.newCall(request)
+
+        // ربط إلغاء Coroutine بإلغاء OkHttp Call فعليًا
+        continuation.invokeOnCancellation {
+            call.cancel()
+        }
+
+        call.enqueue(object : Callback {
+
+            override fun onFailure(call: Call, e: IOException) {
+                if (continuation.isCancelled) {
+                    return
+                }
+
+                continuation.resumeWithException(e)
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                response.use { res ->
+
+                    if (!res.isSuccessful) {
+                        continuation.resume(null)
+                        return
+                    }
+
+                    try {
+                        val bytes = res.body?.bytes()
+                        continuation.resume(bytes)
+                    } catch (e: IOException) {
+                        if (!continuation.isCancelled) {
+                            continuation.resumeWithException(e)
+                        }
+                    }
+                }
+            }
+        })
+    }
 }

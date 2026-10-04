@@ -13,6 +13,7 @@ import androidx.work.workDataOf
 import com.master.aistudio.R
 import java.io.File
 import java.io.FileOutputStream
+import kotlinx.coroutines.CancellationException
 
 /**
  * بيشتغل كـ Foreground Service مضمون من النظام، فمش بيتقفل لو المستخدم
@@ -53,17 +54,28 @@ class ImageProcessingWorker(
         val resultBytes = try {
             when (tool) {
                 "FACE" -> NetworkManager.enhanceFace(imageFile)
+
                 "FULL" -> NetworkManager.enhanceFull(imageFile)
+
                 "REMOVE" -> {
-                    val maskFile = maskPath?.let { File(it) } ?: return Result.failure()
+                    val maskFile = maskPath?.let { File(it) }
+                    ?: return Result.failure()
+
                     NetworkManager.inpaintObject(imageFile, maskFile)
                 }
+
                 "PORTRAIT" -> NetworkManager.portraitBlur(imageFile, blur)
+
                 else -> null
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             e.printStackTrace()
             null
+        } finally {
+            imageFile.delete()
+            maskPath?.let { File(it).delete() }
         }
 
         // تنظيف ملفات الإدخال المؤقتة بعد الاستخدام مباشرة
@@ -92,12 +104,12 @@ class ImageProcessingWorker(
     private fun createForegroundInfo(message: String): ForegroundInfo {
         createChannelIfNeeded()
         val notification = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
-            .setContentTitle("Master AI Studio")
-            .setContentText(message)
-            .setSmallIcon(R.drawable.ic_tool_full)
-            .setOngoing(true)
-            .setProgress(0, 0, true)
-            .build()
+        .setContentTitle("Master AI Studio")
+        .setContentText(message)
+        .setSmallIcon(R.drawable.ic_tool_full)
+        .setOngoing(true)
+        .setProgress(0, 0, true)
+        .build()
 
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             ForegroundInfo(PROGRESS_NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
@@ -112,11 +124,11 @@ class ImageProcessingWorker(
         val text = if (success) "افتح التطبيق لمشاهدة النتيجة" else "افتح التطبيق وجرّب تاني"
 
         val notification = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
-            .setContentTitle(title)
-            .setContentText(text)
-            .setSmallIcon(R.drawable.ic_tool_full)
-            .setAutoCancel(true)
-            .build()
+        .setContentTitle(title)
+        .setContentText(text)
+        .setSmallIcon(R.drawable.ic_tool_full)
+        .setAutoCancel(true)
+        .build()
 
         val manager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(DONE_NOTIFICATION_ID, notification)

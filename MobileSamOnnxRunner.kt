@@ -30,8 +30,7 @@ class MobileSamOnnxRunner(context: Context) : Closeable {
     }
 
     private val appContext = context.applicationContext
-    private val environment = OrtEnvironment.getEnvironment()
-
+    private val environment = OnnxSessionFactory.environment
     private val encoderSession: OrtSession = OnnxSessionFactory.createSession(
         modelBytes = loadAsset(ENCODER_ASSET),
         environment = environment,

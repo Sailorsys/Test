@@ -84,6 +84,13 @@ class InteractiveTouchImageView @JvmOverloads constructor(
         invalidate()
     }
 
+    fun detachMaskBitmap(): Bitmap? {
+        val old = maskBitmap
+        maskBitmap = null
+        invalidate()
+        return old
+    }
+
     fun clearMask() {
         this.maskBitmap = null
         this.touchPath.reset()
@@ -173,16 +180,15 @@ class InteractiveTouchImageView @JvmOverloads constructor(
         if (magnifier == null) {
             val size = magnifierSizePx
             val builder = Magnifier.Builder(this)
-                .setInitialZoom(2.5f)
-                .setCornerRadius(size / 2f)
-                .setElevation(resources.displayMetrics.density * 8f)
+            .setInitialZoom(2.5f)
+            .setCornerRadius(size / 2f)
+            .setElevation(resources.displayMetrics.density * 8f)
 
             // setSize موجود منذ API 28 (مُهمل في 29 لكنه يعمل).
             builder.setSize(size, size)
 
             // API 29+: نُزيح عرض العدسة فوق الصباع، بينما المحتوى
             // المكبَّر يظل عند نقطة اللمس الفعلية.
-            
 
             magnifier = builder.build()
         }

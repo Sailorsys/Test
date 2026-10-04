@@ -42,6 +42,15 @@ class DepthBlurGLView @JvmOverloads constructor(
         }
     }
 
+    fun releaseBitmapReferences(onReleased: (() -> Unit)? = null) {
+        queueEvent {
+            renderer.releaseBitmapReferences()
+            post {
+                onReleased?.invoke()
+            }
+        }
+    }
+
     fun setBlurStrength(strength: Float) {
         queueEvent {
             renderer.blurStrength = strength.coerceIn(0f, 1f)
@@ -296,6 +305,13 @@ class DepthBlurGLView @JvmOverloads constructor(
             pendingDepth = depth
             pendingMask = mask
             hasNewBitmaps = true
+        }
+
+        fun releaseBitmapReferences() {
+            pendingMain = null
+            pendingDepth = null
+            pendingMask = null
+            hasNewBitmaps = false
         }
 
         private fun updateAspectScale() {

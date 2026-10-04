@@ -77,6 +77,7 @@ class MainActivity : AppCompatActivity() {
     private var beforeBitmap: Bitmap? = null
     private var selectedTool = Tool.FACE
     private var hasMask = false
+    private var displayedMaskBitmap: Bitmap? = null
 
     private var currentBokehResult: MainViewModel.BokehPreparationResult? = null
 
@@ -137,6 +138,21 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun releaseDisplayedMask() {
+        val oldMask = displayedMaskBitmap
+        displayedMaskBitmap = null
+
+        if (oldMask != null && !oldMask.isRecycled) {
+            oldMask.recycle()
+        }
+    }
+
+    private fun clearDisplayedMask() {
+        touchImageView.detachMaskBitmap()
+        releaseDisplayedMask()
+        hasMask = false
+    }
+
     private val pickImageLauncher =
     registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let { selectedUri ->
@@ -156,15 +172,25 @@ class MainActivity : AppCompatActivity() {
 
                 bitmap?.let { b ->
                     clearHistoryStack()
+
+                    // Release everything belonging to the previous image
+                    // before installing the new image.
+                    clearDisplayedMask()
+                    viewModel.clearMask()
+                    releaseCurrentBokehResult()
+
                     selectedBitmap = b
                     beforeBitmap = b
-                    viewModel.clearMask()
-                    recycleCurrentBokehResult()
+
                     touchImageView.setImageBitmap(b)
                     touchImageView.clearMask()
+
                     hasMask = false
                     radioMaskClick.isChecked = true
-                    touchImageView.setTouchMode(InteractiveTouchImageView.TouchMode.CLICK)
+                    touchImageView.setTouchMode(
+                        InteractiveTouchImageView.TouchMode.CLICK
+                    )
+
                     switchToEditMode()
                     updateUiState()
                     tvStatus.text = "الصورة جاهزة، اختر الأداة واضغط تنفيذ"
@@ -380,8 +406,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         btnClearMask.setOnClickListener {
-            touchImageView.clearMask()
-            hasMask = false
+            clearDisplayedMask()
             viewModel.clearMask()
             updateUiState()
         }
@@ -432,14 +457,34 @@ class MainActivity : AppCompatActivity() {
         depthBlurView.setHighlightBoost(highlightBoost)
     }
 
-    private fun recycleCurrentBokehResult() {
-        currentBokehResult?.let { previous ->
-            if (!previous.sourceForGpu.isRecycled) previous.sourceForGpu.recycle()
-            if (!previous.depthForGpu.isRecycled) previous.depthForGpu.recycle()
-            if (!previous.maskForGpu.isRecycled) previous.maskForGpu.recycle()
+    private fun recycleBokehBitmaps(
+        result: MainViewModel.BokehPreparationResult
+    ) {
+        if (!result.sourceForGpu.isRecycled) {
+            result.sourceForGpu.recycle()
         }
+
+        if (!result.depthForGpu.isRecycled) {
+            result.depthForGpu.recycle()
+        }
+
+        if (!result.maskForGpu.isRecycled) {
+            result.maskForGpu.recycle()
+        }
+    }
+
+    private fun releaseCurrentBokehResult() {
+        val previous = currentBokehResult ?: run {
+            viewModel.clearBokehResult()
+            return
+        }
+
         currentBokehResult = null
         viewModel.clearBokehResult()
+
+        depthBlurView.releaseBitmapReferences {
+            recycleBokehBitmaps(previous)
+        }
     }
 
     private fun saveBokehResult() {
@@ -483,13 +528,40 @@ class MainActivity : AppCompatActivity() {
         }
 
         viewModel.maskBitmap.observe(this) { mask ->
-            hasMask = mask != null
+
+            val previousMask = displayedMaskBitmap
+
             if (mask != null) {
+                displayedMaskBitmap = mask
                 touchImageView.setMaskBitmap(mask)
-                tvStatus.text = "تم تحديث التحديد — يمكنك إضافة نقرة أو رسمة، أو الرجوع خطوة"
+
+                hasMask = true
+
+                if (
+                    previousMask != null &&
+                    previousMask !== mask &&
+                    !previousMask.isRecycled
+                ) {
+                    previousMask.recycle()
+                }
+
+                tvStatus.text =
+                "تم تحديث التحديد — يمكنك إضافة نقرة أو رسمة، أو الرجوع خطوة"
+
             } else {
+                displayedMaskBitmap = null
                 touchImageView.clearMask()
+
+                hasMask = false
+
+                if (
+                    previousMask != null &&
+                    !previousMask.isRecycled
+                ) {
+                    previousMask.recycle()
+                }
             }
+
             updateUiState()
         }
 
@@ -501,12 +573,14 @@ class MainActivity : AppCompatActivity() {
             stopFakeProgress(completed = true)
 
             if (result !== currentBokehResult) {
-                currentBokehResult?.let { previous ->
-                    if (!previous.sourceForGpu.isRecycled) previous.sourceForGpu.recycle()
-                    if (!previous.depthForGpu.isRecycled) previous.depthForGpu.recycle()
-                    if (!previous.maskForGpu.isRecycled) previous.maskForGpu.recycle()
-                }
+                val previous = currentBokehResult
                 currentBokehResult = result
+
+                if (previous != null) {
+                    depthBlurView.releaseBitmapReferences {
+                        recycleBokehBitmaps(previous)
+                    }
+                }
             }
 
             depthBlurView.setFocusDepth(result.focusDepth)
@@ -551,7 +625,7 @@ class MainActivity : AppCompatActivity() {
                         }
 
                         bitmap?.let { result ->
-                            recycleCurrentBokehResult()
+                            releaseCurrentBokehResult()
                             selectedBitmap?.let { current -> pushToHistory(current) }
                             selectedBitmap = result
                             touchImageView.setImageBitmap(result)
@@ -606,11 +680,13 @@ class MainActivity : AppCompatActivity() {
         beforeBitmap = historyStack.peekLast() ?: previousBitmap
         beforeAfterSlider.setImages(beforeBitmap!!, selectedBitmap!!)
 
-        recycleCurrentBokehResult()
-        touchImageView.setImageBitmap(previousBitmap)
-        touchImageView.clearMask()
-        hasMask = false
+        releaseCurrentBokehResult()
+
+        clearDisplayedMask()
         viewModel.clearMask()
+
+        touchImageView.setImageBitmap(previousBitmap)
+        hasMask = false
 
         updateUiState()
         tvStatus.text = "تم التراجع عن التعديل الأخير ↩️"
@@ -618,15 +694,29 @@ class MainActivity : AppCompatActivity() {
 
     private fun resetToEmptyState() {
         clearHistoryStack()
+
+        // Release the currently displayed mask first.
+        // InteractiveTouchImageView must no longer hold the Bitmap
+        // before MainActivity recycles it.
+        clearDisplayedMask()
+
+        // Clear ViewModel-owned mask pipeline/history.
+        viewModel.clearMask()
+
+        // Release the Bokeh result after GL releases its references.
+        releaseCurrentBokehResult()
+
         selectedBitmap = null
         beforeBitmap = null
         hasMask = false
-        viewModel.clearMask()
-        recycleCurrentBokehResult()
-        touchImageView.clearMask()
+
         touchImageView.setImageBitmap(null)
+
         radioMaskClick.isChecked = true
-        touchImageView.setTouchMode(InteractiveTouchImageView.TouchMode.CLICK)
+        touchImageView.setTouchMode(
+            InteractiveTouchImageView.TouchMode.CLICK
+        )
+
         switchToEditMode()
         updateUiState()
         tvStatus.text = "تحسين صورك بلمسة ذكية"
@@ -713,7 +803,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        clearDisplayedMask()
+        releaseCurrentBokehResult()
         super.onDestroy()
-        recycleCurrentBokehResult()
     }
 }

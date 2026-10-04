@@ -28,17 +28,18 @@ class DepthAnythingRunner(private val context: Context) {
         private const val STD_B = 0.225f
     }
 
-    private var ortEnv: OrtEnvironment? = null
+    // private var ortEnv: OrtEnvironment? = null
     private var ortSession: OrtSession? = null
 
     @Synchronized
     private fun getSession(): OrtSession {
         if (ortSession == null) {
-            val env = OrtEnvironment.getEnvironment()
-            ortEnv = env
+            val env = OnnxSessionFactory.environment
+
             context.assets.open(MODEL_NAME).use { asset ->
                 val bytes = asset.readBytes()
                 Log.d(TAG, "Loaded ONNX model: ${bytes.size} bytes")
+
                 ortSession = OnnxSessionFactory.createSession(
                     modelBytes = bytes,
                     environment = env,
@@ -46,6 +47,7 @@ class DepthAnythingRunner(private val context: Context) {
                 )
             }
         }
+
         return ortSession!!
     }
 
@@ -69,8 +71,8 @@ class DepthAnythingRunner(private val context: Context) {
             inputFloatArray[area + i] = (g / 255f - MEAN_G) / STD_G
             inputFloatArray[2 * area + i] = (b / 255f - MEAN_B) / STD_B
         }
+        val env = OnnxSessionFactory.environment
 
-        val env = ortEnv ?: OrtEnvironment.getEnvironment()
         val inputShape = longArrayOf(1, 3, INPUT_SIZE.toLong(), INPUT_SIZE.toLong())
         val inputTensor = OnnxTensor.createTensor(env, FloatBuffer.wrap(inputFloatArray), inputShape)
 
@@ -201,7 +203,7 @@ class DepthAnythingRunner(private val context: Context) {
         val rangeSigma = 25f
 
         val spatialWeights = FloatArray(2 * radius + 1)
-        for (d in -radius..radius) {
+        for (d in -radius .. radius) {
             spatialWeights[d + radius] = kotlin.math.exp(-(d * d) / (2f * spatialSigma * spatialSigma))
         }
         val rangeLUT = FloatArray(256)
@@ -218,7 +220,7 @@ class DepthAnythingRunner(private val context: Context) {
                 val centerGuide = guideGray[centerIdx]
                 var sum = 0f
                 var wsum = 0f
-                for (d in -radius..radius) {
+                for (d in -radius .. radius) {
                     val xx = (x + d).coerceIn(0, size - 1)
                     val idx = rowOffset + xx
                     val diff = kotlin.math.abs(guideGray[idx] - centerGuide)
@@ -238,7 +240,7 @@ class DepthAnythingRunner(private val context: Context) {
                 val centerGuide = guideGray[centerIdx]
                 var sum = 0f
                 var wsum = 0f
-                for (d in -radius..radius) {
+                for (d in -radius .. radius) {
                     val yy = (y + d).coerceIn(0, size - 1)
                     val idx = yy * size + x
                     val diff = kotlin.math.abs(guideGray[idx] - centerGuide)
@@ -262,9 +264,9 @@ class DepthAnythingRunner(private val context: Context) {
     fun close() {
         try {
             ortSession?.close()
-            ortEnv?.close()
-        } catch (_: Exception) { }
+        } catch (_: Exception) {
+        }
+
         ortSession = null
-        ortEnv = null
     }
 }

@@ -22,9 +22,10 @@ object OnnxSessionFactory {
 
     private const val TAG = "OnnxSessionFactory"
 
-    // 4 خيوط = أفضل توازن على معالجات big.LITTLE.
-    // 1 خيط inter-op = التنفيذ المتسلسل أسرع من المتوازي على الموبايل
-    // (الـ inter-op parallelism مفيد أساساً عند خدمة عدة طلبات متزامنة).
+    val environment: OrtEnvironment by lazy {
+        OrtEnvironment.getEnvironment()
+    }
+
     private const val INTRA_OP_THREADS = 4
     private const val INTER_OP_THREADS = 1
 
@@ -65,7 +66,6 @@ object OnnxSessionFactory {
                 )
             }
         } finally {
-            // SessionOptions يحتل ذاكرة native — لازم يُغلق بعد createSession
             options.close()
         }
     }

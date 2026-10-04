@@ -126,10 +126,10 @@ class MainViewModel : ViewModel() {
         )
 
         val dataBuilder = Data.Builder()
-            .putString(ImageProcessingWorker.KEY_TOOL, tool)
-            .putString(ImageProcessingWorker.KEY_IMAGE_PATH, imageFile.absolutePath)
-            .putFloat(ImageProcessingWorker.KEY_FIDELITY, fidelity)
-            .putInt(ImageProcessingWorker.KEY_BLUR, blurStrength)
+        .putString(ImageProcessingWorker.KEY_TOOL, tool)
+        .putString(ImageProcessingWorker.KEY_IMAGE_PATH, imageFile.absolutePath)
+        .putFloat(ImageProcessingWorker.KEY_FIDELITY, fidelity)
+        .putInt(ImageProcessingWorker.KEY_BLUR, blurStrength)
 
         if (tool == "REMOVE") {
             currentMaskFile?.let {
@@ -138,8 +138,8 @@ class MainViewModel : ViewModel() {
         }
 
         val request = OneTimeWorkRequestBuilder<ImageProcessingWorker>()
-            .setInputData(dataBuilder.build())
-            .build()
+        .setInputData(dataBuilder.build())
+        .build()
 
         WorkManager.getInstance(context).enqueueUniqueWork(
             ImageProcessingWorker.UNIQUE_WORK_NAME,
@@ -248,7 +248,7 @@ class MainViewModel : ViewModel() {
                     } catch (localError: Exception) {
                         localError.printStackTrace()
                         withContext(Dispatchers.IO) { remoteFallback() }
-                            ?: throw localError
+                        ?: throw localError
                     }
 
                     val (workingWidth, workingHeight) = computeMaskWorkingSize(
@@ -279,18 +279,18 @@ class MainViewModel : ViewModel() {
                 } catch (error: Exception) {
                     error.printStackTrace()
                     _maskBitmap.postValue(accumulatedRawMask?.let { working ->
-                        val closed = ImageUtils.closeMask(working, 3)
-                        val expanded = ImageUtils.dilateMask(
-                            closed,
-                            expansionRadiusFor(working.width, working.height)
-                        )
-                        val feathered = ImageUtils.featherMask(expanded, 5f)
-                        Bitmap.createScaledBitmap(
-                            feathered,
-                            imageBitmap.width,
-                            imageBitmap.height,
-                            true
-                        )
+                            val closed = ImageUtils.closeMask(working, 3)
+                            val expanded = ImageUtils.dilateMask(
+                                closed,
+                                expansionRadiusFor(working.width, working.height)
+                            )
+                            val feathered = ImageUtils.featherMask(expanded, 5f)
+                            Bitmap.createScaledBitmap(
+                                feathered,
+                                imageBitmap.width,
+                                imageBitmap.height,
+                                true
+                            )
                     })
                 } finally {
                     _isLoading.postValue(false)
@@ -403,44 +403,52 @@ class MainViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.Default) {
             bokehMutex.withLock {
                 _isLoading.postValue(true)
+
+                var depthBitmap: Bitmap? = null
+                var maskBitmap: Bitmap? = null
+                var sourceForGpu: Bitmap? = null
+                var depthForGpu: Bitmap? = null
+                var maskForGpu: Bitmap? = null
+
                 try {
                     val appContext = context.applicationContext
 
-                    val depthBitmap = getBokehDepthRunner(appContext).run(sourceBitmap)
-                    val maskBitmap = getBokehSelfieRunner().process(appContext, sourceBitmap)
+                    depthBitmap = getBokehDepthRunner(appContext).run(sourceBitmap)
+                    maskBitmap = getBokehSelfieRunner().process(appContext, sourceBitmap)
 
                     val gpuSize = scaleForBokehGpu(sourceBitmap)
 
-                    val sourceForGpu = Bitmap.createScaledBitmap(
+                    sourceForGpu = Bitmap.createScaledBitmap(
                         sourceBitmap,
                         gpuSize.first,
                         gpuSize.second,
                         true
                     )
 
-                    val depthForGpu = Bitmap.createScaledBitmap(
+                    depthForGpu = Bitmap.createScaledBitmap(
                         depthBitmap,
                         gpuSize.first,
                         gpuSize.second,
                         true
                     )
 
-                    val maskForGpu = Bitmap.createScaledBitmap(
+                    maskForGpu = Bitmap.createScaledBitmap(
                         maskBitmap,
                         gpuSize.first,
                         gpuSize.second,
                         true
                     )
 
-                    if (!depthBitmap.isRecycled) {
-                        depthBitmap.recycle()
-                    }
+                    depthBitmap.recycle()
+                    depthBitmap = null
 
-                    if (!maskBitmap.isRecycled) {
-                        maskBitmap.recycle()
-                    }
+                    maskBitmap.recycle()
+                    maskBitmap = null
 
-                    val focusDepth = computeBokehFocusDepth(depthForGpu, maskForGpu)
+                    val focusDepth = computeBokehFocusDepth(
+                        depthForGpu,
+                        maskForGpu
+                    )
 
                     val autoTuning = bokehAutoTuningEstimator.estimate(
                         sourceForGpu,
@@ -458,10 +466,37 @@ class MainViewModel : ViewModel() {
                             autoTuning = autoTuning
                         )
                     )
+
+                    // Ownership transferred to BokehPreparationResult.
+                    sourceForGpu = null
+                    depthForGpu = null
+                    maskForGpu = null
+
                 } catch (error: Exception) {
                     error.printStackTrace()
                     _bokehError.postValue(Event(Unit))
+
                 } finally {
+                    depthBitmap?.let {
+                        if (!it.isRecycled) it.recycle()
+                    }
+
+                    maskBitmap?.let {
+                        if (!it.isRecycled) it.recycle()
+                    }
+
+                    sourceForGpu?.let {
+                        if (!it.isRecycled) it.recycle()
+                    }
+
+                    depthForGpu?.let {
+                        if (!it.isRecycled) it.recycle()
+                    }
+
+                    maskForGpu?.let {
+                        if (!it.isRecycled) it.recycle()
+                    }
+
                     _isLoading.postValue(false)
                 }
             }

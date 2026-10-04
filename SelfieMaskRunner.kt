@@ -18,14 +18,13 @@ class SelfieMaskRunner {
         private const val INPUT_SIZE = 512
     }
 
-    private var ortEnv: OrtEnvironment? = null
+    // private var ortEnv: OrtEnvironment? = null
     private var ortSession: OrtSession? = null
 
     @Synchronized
     private fun getSession(context: Context): OrtSession {
         if (ortSession == null) {
-            val env = OrtEnvironment.getEnvironment()
-            ortEnv = env
+            val env = OnnxSessionFactory.environment
             context.assets.open(MODEL_NAME).use { asset ->
                 val bytes = asset.readBytes()
                 ortSession = OnnxSessionFactory.createSession(
@@ -58,8 +57,7 @@ class SelfieMaskRunner {
             inputFloatArray[area + i] = (g - 127.5f) / 127.5f
             inputFloatArray[2 * area + i] = (b - 127.5f) / 127.5f
         }
-
-        val env = ortEnv ?: OrtEnvironment.getEnvironment()
+        val env = OnnxSessionFactory.environment
         val inputShape = longArrayOf(1, 3, INPUT_SIZE.toLong(), INPUT_SIZE.toLong())
         val inputTensor = OnnxTensor.createTensor(env, FloatBuffer.wrap(inputFloatArray), inputShape)
 
@@ -142,9 +140,9 @@ class SelfieMaskRunner {
     fun close() {
         try {
             ortSession?.close()
-            ortEnv?.close()
-        } catch (_: Exception) { }
+        } catch (_: Exception) {
+        }
+
         ortSession = null
-        ortEnv = null
     }
 }
