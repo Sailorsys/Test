@@ -291,7 +291,7 @@ class MainViewModel : ViewModel() {
 
                 var newMaskFullRes: Bitmap? = null
                 var newMaskWorking: Bitmap? = null
-                var ownsNewMaskWorking = false
+                
 
                 try {
                     newMaskFullRes = try {
@@ -328,7 +328,7 @@ class MainViewModel : ViewModel() {
                     ) {
                         newMaskFullRes
                     } else {
-                        ownsNewMaskWorking = true
+                        
 
                         Bitmap.createScaledBitmap(
                             newMaskFullRes!!,
@@ -360,7 +360,7 @@ class MainViewModel : ViewModel() {
 
                     maskSteps.add(newMaskWorking!!)
                     newMaskWorking = null
-                    ownsNewMaskWorking = false
+                    
 
                     rebuildMaskPipeline(
                         context = context,
