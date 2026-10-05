@@ -11,7 +11,7 @@ import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
-
+import java.util.concurrent.atomic.AtomicLong
 import java.io.File
 import kotlin.math.max
 import kotlin.math.min
@@ -74,6 +74,7 @@ class MainViewModel : ViewModel() {
      */
     private var accumulatedRawMask: Bitmap? = null
     private val segmentationMutex = Mutex()
+    private val maskGeneration = AtomicLong(0L)
 
     /**
      * نتيجة تحضير بيانات تأثير البوكيه.
@@ -96,6 +97,7 @@ class MainViewModel : ViewModel() {
     private var bokehSelfieRunner: SelfieMaskRunner? = null
     private val bokehAutoTuningEstimator = AutoTuningEstimator()
     private val bokehMutex = Mutex()
+    private val bokehGeneration = AtomicLong(0L)
 
     private fun expansionRadiusFor(width: Int, height: Int): Int {
         return (min(width, height) * 0.009f).roundToInt().coerceIn(4, 18)
@@ -169,17 +171,28 @@ class MainViewModel : ViewModel() {
      * كما هو (إذا كانت أبعاده مطابقة لدقة المعالجة)، أو تصغّره وتحرر الأصل.
      * لا تقم بـ recycle() خارجياً على drawMask بعد تمريره هنا.
      */
-    fun addDrawMaskStep(context: Context, drawMask: Bitmap, imageBitmap: Bitmap) {
+    fun addDrawMaskStep(
+        context: Context,
+        drawMask: Bitmap,
+        imageBitmap: Bitmap
+    ) {
+        val generation = maskGeneration.get()
+
         viewModelScope.launch(Dispatchers.Default) {
             segmentationMutex.withLock {
                 _isLoading.postValue(true)
+
+                var drawMaskWorking: Bitmap? = null
+
                 try {
-                    val (workingWidth, workingHeight) = computeMaskWorkingSize(
+                    val (workingWidth, workingHeight) =
+                    computeMaskWorkingSize(
                         imageBitmap.width,
                         imageBitmap.height
                     )
 
-                    val drawMaskWorking = if (
+                    drawMaskWorking =
+                    if (
                         drawMask.width == workingWidth &&
                         drawMask.height == workingHeight
                     ) {
@@ -191,16 +204,42 @@ class MainViewModel : ViewModel() {
                             workingHeight,
                             true
                         ).also {
-                            if (it !== drawMask && !drawMask.isRecycled) {
+                            if (
+                                it !== drawMask &&
+                                !drawMask.isRecycled
+                            ) {
                                 drawMask.recycle()
                             }
                         }
                     }
 
+                    if (generation != maskGeneration.get()) {
+                        if (!drawMaskWorking.isRecycled) {
+                            drawMaskWorking.recycle()
+                        }
+                        drawMaskWorking = null
+                        return@withLock
+                    }
+
                     maskSteps.add(drawMaskWorking)
-                    rebuildMaskPipeline(context, imageBitmap.width, imageBitmap.height)
+                    drawMaskWorking = null
+
+                    rebuildMaskPipeline(
+                        context,
+                        imageBitmap.width,
+                        imageBitmap.height,
+                        generation
+                    )
+
                 } catch (error: Exception) {
                     error.printStackTrace()
+
+                    drawMaskWorking?.let {
+                        if (!it.isRecycled) {
+                            it.recycle()
+                        }
+                    }
+
                 } finally {
                     _isLoading.postValue(false)
                 }
@@ -225,7 +264,12 @@ class MainViewModel : ViewModel() {
                 }
 
                 try {
-                    rebuildMaskPipeline(context, imageBitmap.width, imageBitmap.height)
+                    rebuildMaskPipeline(
+                        context,
+                        imageBitmap.width,
+                        imageBitmap.height,
+                        maskGeneration.get()
+                    )
                 } catch (error: Exception) {
                     error.printStackTrace()
                 }
@@ -239,60 +283,185 @@ class MainViewModel : ViewModel() {
         localInference: () -> Bitmap,
         remoteFallback: suspend () -> Bitmap?
     ) {
+        val generation = maskGeneration.get()
+
         viewModelScope.launch(Dispatchers.Default) {
             segmentationMutex.withLock {
                 _isLoading.postValue(true)
+
+                var newMaskFullRes: Bitmap? = null
+                var newMaskWorking: Bitmap? = null
+                var ownsNewMaskWorking = false
+
                 try {
-                    val newMaskFullRes = try {
+                    newMaskFullRes = try {
                         localInference()
                     } catch (localError: Exception) {
                         localError.printStackTrace()
-                        withContext(Dispatchers.IO) { remoteFallback() }
-                        ?: throw localError
+
+                        withContext(Dispatchers.IO) {
+                            remoteFallback()
+                        } ?: throw localError
                     }
 
-                    val (workingWidth, workingHeight) = computeMaskWorkingSize(
+                    // الصورة/جلسة الـ Mask تغيّرت أثناء الـ inference.
+                    if (generation != maskGeneration.get()) {
+                        newMaskFullRes?.let {
+                            if (!it.isRecycled) {
+                                it.recycle()
+                            }
+                        }
+                        newMaskFullRes = null
+                        return@withLock
+                    }
+
+                    val (workingWidth, workingHeight) =
+                    computeMaskWorkingSize(
                         imageBitmap.width,
                         imageBitmap.height
                     )
 
-                    val newMaskWorking = if (
-                        newMaskFullRes.width == workingWidth &&
-                        newMaskFullRes.height == workingHeight
+                    newMaskWorking =
+                    if (
+                        newMaskFullRes!!.width == workingWidth &&
+                        newMaskFullRes!!.height == workingHeight
                     ) {
                         newMaskFullRes
                     } else {
+                        ownsNewMaskWorking = true
+
                         Bitmap.createScaledBitmap(
-                            newMaskFullRes,
+                            newMaskFullRes!!,
                             workingWidth,
                             workingHeight,
                             true
                         ).also {
-                            if (it !== newMaskFullRes && !newMaskFullRes.isRecycled) {
-                                newMaskFullRes.recycle()
+                            if (
+                                it !== newMaskFullRes &&
+                                !newMaskFullRes!!.isRecycled
+                            ) {
+                                newMaskFullRes!!.recycle()
                             }
+
+                            newMaskFullRes = null
                         }
                     }
 
-                    maskSteps.add(newMaskWorking)
-                    rebuildMaskPipeline(context, imageBitmap.width, imageBitmap.height)
+                    // تحقق ثاني قبل نقل الملكية إلى maskSteps.
+                    if (generation != maskGeneration.get()) {
+                        newMaskWorking?.let {
+                            if (!it.isRecycled) {
+                                it.recycle()
+                            }
+                        }
+                        newMaskWorking = null
+                        return@withLock
+                    }
+
+                    maskSteps.add(newMaskWorking!!)
+                    newMaskWorking = null
+                    ownsNewMaskWorking = false
+
+                    rebuildMaskPipeline(
+                        context = context,
+                        imageWidth = imageBitmap.width,
+                        imageHeight = imageBitmap.height,
+                        expectedGeneration = generation
+                    )
+
                 } catch (error: Exception) {
                     error.printStackTrace()
-                    _maskBitmap.postValue(accumulatedRawMask?.let { working ->
-                            val closed = ImageUtils.closeMask(working, 3)
-                            val expanded = ImageUtils.dilateMask(
-                                closed,
-                                expansionRadiusFor(working.width, working.height)
-                            )
-                            val feathered = ImageUtils.featherMask(expanded, 5f)
-                            Bitmap.createScaledBitmap(
-                                feathered,
-                                imageBitmap.width,
-                                imageBitmap.height,
-                                true
-                            )
-                    })
+
+                    newMaskWorking?.let {
+                        if (!it.isRecycled) {
+                            it.recycle()
+                        }
+                    }
+
+                    newMaskFullRes?.let {
+                        if (!it.isRecycled) {
+                            it.recycle()
+                        }
+                    }
+
+                    // لا نعيد إظهار Mask قديم إذا أصبحت العملية stale.
+                    if (generation == maskGeneration.get()) {
+                        _maskBitmap.postValue(
+                            accumulatedRawMask?.let { working ->
+
+                                var closed: Bitmap? = null
+                                var expanded: Bitmap? = null
+                                var feathered: Bitmap? = null
+                                var preview: Bitmap? = null
+
+                                try {
+                                    closed = ImageUtils.closeMask(
+                                        working,
+                                        3
+                                    )
+
+                                    expanded = ImageUtils.dilateMask(
+                                        closed,
+                                        expansionRadiusFor(
+                                            working.width,
+                                            working.height
+                                        )
+                                    )
+
+                                    feathered = ImageUtils.featherMask(
+                                        expanded,
+                                        5f
+                                    )
+
+                                    preview =
+                                    Bitmap.createScaledBitmap(
+                                        feathered,
+                                        imageBitmap.width,
+                                        imageBitmap.height,
+                                        true
+                                    )
+
+                                    preview
+                                } finally {
+
+                                    closed?.let {
+                                        if (!it.isRecycled) {
+                                            it.recycle()
+                                        }
+                                    }
+
+                                    expanded?.let {
+                                        if (!it.isRecycled) {
+                                            it.recycle()
+                                        }
+                                    }
+
+                                    feathered?.let {
+                                        if (
+                                            it !== preview &&
+                                            !it.isRecycled
+                                        ) {
+                                            it.recycle()
+                                        }
+                                    }
+                                }
+                            }
+                        )
+                    }
+
                 } finally {
+                    newMaskWorking?.let {
+                        if (!it.isRecycled) {
+                            it.recycle()
+                        }
+                    }
+
+                    newMaskFullRes?.let {
+                        if (!it.isRecycled) {
+                            it.recycle()
+                        }
+                    }
+
                     _isLoading.postValue(false)
                 }
             }
@@ -305,77 +474,192 @@ class MainViewModel : ViewModel() {
      *
      * يجب استدعاؤها فقط من داخل segmentationMutex.withLock.
      */
+    /**
+ * يعيد بناء pipeline الماسك من الصفر اعتماداً على الخطوات الحالية:
+ * union كل الخطوات → close → dilate → feather → حفظ الملف + بث المعاينة.
+ *
+ * يجب استدعاؤها فقط من داخل segmentationMutex.withLock.
+ *
+ * Ownership:
+ * - maskSteps: مملوكة للـ ViewModel ولا تُلمس هنا.
+ * - accumulatedRawMask: مملوكة للـ ViewModel.
+ * - كل الـ intermediate Bitmaps مملوكة لهذه الدالة وتُحرر قبل الخروج.
+ * - previewMaskFull تنتقل ملكيتها إلى MainActivity عبر LiveData، لذلك لا نحررها هنا.
+ */
     private suspend fun rebuildMaskPipeline(
         context: Context,
         imageWidth: Int,
-        imageHeight: Int
+        imageHeight: Int,
+        expectedGeneration: Long
     ) {
-        val (workingWidth, workingHeight) = computeMaskWorkingSize(imageWidth, imageHeight)
+        if (expectedGeneration != maskGeneration.get()) {
+            return
+        }
+
+        val (workingWidth, workingHeight) =
+        computeMaskWorkingSize(
+            imageWidth,
+            imageHeight
+        )
 
         if (maskSteps.isEmpty()) {
+            accumulatedRawMask?.let {
+                if (!it.isRecycled) {
+                    it.recycle()
+                }
+            }
+
             accumulatedRawMask = null
+
             currentMaskFile?.delete()
             currentMaskFile = null
-            _maskBitmap.postValue(null)
+
+            if (expectedGeneration == maskGeneration.get()) {
+                _maskBitmap.postValue(null)
+            }
+
             return
         }
 
         var combined: Bitmap? = null
-        for (step in maskSteps) {
-            combined = ImageUtils.unionMasks(combined, step)
-        }
+        var closedMask: Bitmap? = null
+        var expandedMaskWorking: Bitmap? = null
+        var previewMaskWorking: Bitmap? = null
+        var expandedMaskFull: Bitmap? = null
+        var previewMaskFull: Bitmap? = null
 
-        val combinedRawMask = combined ?: run {
-            accumulatedRawMask = null
+        try {
+
+            for (step in maskSteps) {
+
+                val previousCombined = combined
+
+                combined = ImageUtils.unionMasks(
+                    previousCombined,
+                    step
+                )
+
+                if (
+                    previousCombined != null &&
+                    previousCombined !== combined &&
+                    !previousCombined.isRecycled
+                ) {
+                    previousCombined.recycle()
+                }
+            }
+
+            val combinedRawMask = combined
+            ?: return
+
+            combined = null
+
+            if (expectedGeneration != maskGeneration.get()) {
+                if (!combinedRawMask.isRecycled) {
+                    combinedRawMask.recycle()
+                }
+                return
+            }
+
+            val previousAccumulated = accumulatedRawMask
+
+            accumulatedRawMask = combinedRawMask
+
+            if (
+                previousAccumulated != null &&
+                previousAccumulated !== combinedRawMask &&
+                !previousAccumulated.isRecycled
+            ) {
+                previousAccumulated.recycle()
+            }
+
+            closedMask = ImageUtils.closeMask(
+                combinedRawMask,
+                3
+            )
+
+            expandedMaskWorking = ImageUtils.dilateMask(
+                closedMask,
+                expansionRadiusFor(
+                    workingWidth,
+                    workingHeight
+                )
+            )
+
+            previewMaskWorking = ImageUtils.featherMask(
+                expandedMaskWorking,
+                5f
+            )
+
+            expandedMaskFull = Bitmap.createScaledBitmap(
+                expandedMaskWorking,
+                imageWidth,
+                imageHeight,
+                false
+            )
+
+            previewMaskFull = Bitmap.createScaledBitmap(
+                previewMaskWorking,
+                imageWidth,
+                imageHeight,
+                true
+            )
+
+            if (expectedGeneration != maskGeneration.get()) {
+                return
+            }
+
             currentMaskFile?.delete()
-            currentMaskFile = null
-            _maskBitmap.postValue(null)
-            return
-        }
 
-        accumulatedRawMask = combinedRawMask
+            currentMaskFile = ImageUtils.maskBitmapToFile(
+                context.applicationContext,
+                expandedMaskFull,
+                "current_mask.png"
+            )
 
-        // 1. Closing صغير (radius=3) يملأ الفجوات الداخلية في القناع.
-        val closedMask = ImageUtils.closeMask(combinedRawMask, 3)
+            if (expectedGeneration == maskGeneration.get()) {
+                _maskBitmap.postValue(previewMaskFull)
+                previewMaskFull = null
+            }
 
-        // 2. Dilation رئيسي يوسع القناع عشان يشمل حواف العنصر الخارجية.
-        val expandedMaskWorking = ImageUtils.dilateMask(
-            closedMask,
-            expansionRadiusFor(workingWidth, workingHeight)
-        )
+        } finally {
 
-        // 3. Feathering على الدقة المصغّرة (رخيص جداً).
-        val previewMaskWorking = ImageUtils.featherMask(expandedMaskWorking, 5f)
+            combined?.let {
+                if (!it.isRecycled) {
+                    it.recycle()
+                }
+            }
 
-        // التكبير النهائي فقط يحدث على دقة الصورة الأصلية.
-        val expandedMaskFull = Bitmap.createScaledBitmap(
-            expandedMaskWorking,
-            imageWidth,
-            imageHeight,
-            false
-        )
+            closedMask?.let {
+                if (!it.isRecycled) {
+                    it.recycle()
+                }
+            }
 
-        val previewMaskFull = Bitmap.createScaledBitmap(
-            previewMaskWorking,
-            imageWidth,
-            imageHeight,
-            true
-        )
+            expandedMaskWorking?.let {
+                if (!it.isRecycled) {
+                    it.recycle()
+                }
+            }
 
-        // 4. ملف القناع المرسل إلى Big LaMa: binary mask بدون feathering.
-        currentMaskFile?.delete()
-        currentMaskFile = ImageUtils.maskBitmapToFile(
-            context.applicationContext,
-            expandedMaskFull,
-            "current_mask.png"
-        )
-        _maskBitmap.postValue(previewMaskFull)
-    }
+            previewMaskWorking?.let {
+                if (
+                    it !== previewMaskFull &&
+                    !it.isRecycled
+                ) {
+                    it.recycle()
+                }
+            }
 
-    private fun getLocalSam(context: Context): MobileSamOnnxRunner {
-        return localSamRunner ?: synchronized(this) {
-            localSamRunner ?: MobileSamOnnxRunner(context.applicationContext).also {
-                localSamRunner = it
+            expandedMaskFull?.let {
+                if (!it.isRecycled) {
+                    it.recycle()
+                }
+            }
+
+            previewMaskFull?.let {
+                if (!it.isRecycled) {
+                    it.recycle()
+                }
             }
         }
     }
@@ -384,22 +668,54 @@ class MainViewModel : ViewModel() {
      * يمسح كل خطوات التحديد. تُنفَّذ داخل نفس الـ mutex المستخدم في
      * pipeline لتفادي أي race مع عمليات rebuild الجارية.
      */
+    /**
+ * يمسح كل خطوات التحديد.
+ *
+ * Ownership:
+ * - maskSteps: يحررها ViewModel.
+ * - accumulatedRawMask: يحرره ViewModel.
+ * - previewMaskBitmap المنشور عبر LiveData: لا يحرره ViewModel،
+ *   لأن MainActivity أصبحت مالكته بعد استلامه.
+ */
     fun clearMask() {
+
+        // إبطال أي Segmentation/Rebuild قديم فورًا.
+        val newGeneration = maskGeneration.incrementAndGet()
+
         viewModelScope.launch(Dispatchers.Default) {
             segmentationMutex.withLock {
+
+                // لو بدأت جلسة أحدث بعد هذه العملية،
+                // لا نلمس حالتها.
+                if (newGeneration != maskGeneration.get()) {
+                    return@withLock
+                }
+
                 maskSteps.forEach { step ->
-                    if (!step.isRecycled) step.recycle()
+                    if (!step.isRecycled) {
+                        step.recycle()
+                    }
                 }
                 maskSteps.clear()
+
+                accumulatedRawMask?.let {
+                    if (!it.isRecycled) {
+                        it.recycle()
+                    }
+                }
                 accumulatedRawMask = null
+
                 currentMaskFile?.delete()
                 currentMaskFile = null
+
                 _maskBitmap.postValue(null)
             }
         }
     }
 
     fun prepareBokehEffect(context: Context, sourceBitmap: Bitmap) {
+        val generation = bokehGeneration.incrementAndGet()
+
         viewModelScope.launch(Dispatchers.Default) {
             bokehMutex.withLock {
                 _isLoading.postValue(true)
@@ -413,8 +729,11 @@ class MainViewModel : ViewModel() {
                 try {
                     val appContext = context.applicationContext
 
-                    depthBitmap = getBokehDepthRunner(appContext).run(sourceBitmap)
-                    maskBitmap = getBokehSelfieRunner().process(appContext, sourceBitmap)
+                    depthBitmap = getBokehDepthRunner(appContext)
+                    .run(sourceBitmap)
+
+                    maskBitmap = getBokehSelfieRunner()
+                    .process(appContext, sourceBitmap)
 
                     val gpuSize = scaleForBokehGpu(sourceBitmap)
 
@@ -457,44 +776,93 @@ class MainViewModel : ViewModel() {
                         focusDepth
                     )
 
-                    _bokehResult.postValue(
-                        BokehPreparationResult(
-                            sourceForGpu = sourceForGpu,
-                            depthForGpu = depthForGpu,
-                            maskForGpu = maskForGpu,
-                            focusDepth = focusDepth,
-                            autoTuning = autoTuning
-                        )
+                    val result = BokehPreparationResult(
+                        sourceForGpu = sourceForGpu,
+                        depthForGpu = depthForGpu,
+                        maskForGpu = maskForGpu,
+                        focusDepth = focusDepth,
+                        autoTuning = autoTuning
                     )
 
-                    // Ownership transferred to BokehPreparationResult.
-                    sourceForGpu = null
-                    depthForGpu = null
-                    maskForGpu = null
+                    /*
+                 * مهم:
+                 * النشر نفسه يتم على Main thread.
+                 *
+                 * بذلك يصبح فحص generation و clearBokehResult()
+                 * متسلسلين على نفس الـ thread، فلا توجد نافذة race
+                 * بين "الفحص" و"النشر".
+                 */
+                    withContext(Dispatchers.Main.immediate) {
+
+                        if (generation != bokehGeneration.get()) {
+
+                            // النتيجة أصبحت قديمة.
+                            // لم تنتقل ملكيتها إلى Activity.
+                            if (!result.sourceForGpu.isRecycled) {
+                                result.sourceForGpu.recycle()
+                            }
+
+                            if (!result.depthForGpu.isRecycled) {
+                                result.depthForGpu.recycle()
+                            }
+
+                            if (!result.maskForGpu.isRecycled) {
+                                result.maskForGpu.recycle()
+                            }
+
+                        } else {
+
+                            _bokehResult.value = result
+
+                            /*
+                         * Ownership transferred to BokehPreparationResult
+                         * / MainActivity.
+                         */
+                            sourceForGpu = null
+                            depthForGpu = null
+                            maskForGpu = null
+                        }
+                    }
 
                 } catch (error: Exception) {
                     error.printStackTrace()
-                    _bokehError.postValue(Event(Unit))
+
+                    withContext(Dispatchers.Main.immediate) {
+                        if (generation == bokehGeneration.get()) {
+                            _bokehError.value = Event(Unit)
+                        }
+                    }
 
                 } finally {
+
                     depthBitmap?.let {
-                        if (!it.isRecycled) it.recycle()
+                        if (!it.isRecycled) {
+                            it.recycle()
+                        }
                     }
 
                     maskBitmap?.let {
-                        if (!it.isRecycled) it.recycle()
+                        if (!it.isRecycled) {
+                            it.recycle()
+                        }
                     }
 
                     sourceForGpu?.let {
-                        if (!it.isRecycled) it.recycle()
+                        if (!it.isRecycled) {
+                            it.recycle()
+                        }
                     }
 
                     depthForGpu?.let {
-                        if (!it.isRecycled) it.recycle()
+                        if (!it.isRecycled) {
+                            it.recycle()
+                        }
                     }
 
                     maskForGpu?.let {
-                        if (!it.isRecycled) it.recycle()
+                        if (!it.isRecycled) {
+                            it.recycle()
+                        }
                     }
 
                     _isLoading.postValue(false)
@@ -505,6 +873,14 @@ class MainViewModel : ViewModel() {
 
     /** يمسح آخر نتيجة بوكيه محضَّرة، دون حذف الـBitmaps نفسها. */
     fun clearBokehResult() {
+        /*
+     * إبطال أي Bokeh computation ما زال يعمل.
+     *
+     * أي نتيجة تنتهي بعد هذا السطر ستُعتبر stale
+     * ولن يتم نشرها إلى Activity.
+     */
+        bokehGeneration.incrementAndGet()
+
         _bokehResult.value = null
     }
 
@@ -534,6 +910,16 @@ class MainViewModel : ViewModel() {
             max(width, height) <= maxEdge -> width to height
             width > height -> maxEdge to (height * maxEdge / width)
             else -> (width * maxEdge / height) to maxEdge
+        }
+    }
+
+    private fun getLocalSam(context: Context): MobileSamOnnxRunner {
+        return localSamRunner ?: synchronized(this) {
+            localSamRunner ?: MobileSamOnnxRunner(
+                context.applicationContext
+            ).also {
+                localSamRunner = it
+            }
         }
     }
 
@@ -580,9 +966,17 @@ class MainViewModel : ViewModel() {
         localSamRunner = null
 
         maskSteps.forEach { step ->
-            if (!step.isRecycled) step.recycle()
+            if (!step.isRecycled) {
+                step.recycle()
+            }
         }
         maskSteps.clear()
+
+        accumulatedRawMask?.let {
+            if (!it.isRecycled) {
+                it.recycle()
+            }
+        }
         accumulatedRawMask = null
 
         bokehDepthRunner?.close()
