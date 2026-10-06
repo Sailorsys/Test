@@ -37,6 +37,7 @@ import ai.onnxruntime.OrtProvider
 import java.io.File
 import java.util.ArrayDeque
 import java.util.concurrent.TimeUnit
+import java.util.UUID
 
 class MainActivity : AppCompatActivity() {
 
@@ -156,6 +157,7 @@ class MainActivity : AppCompatActivity() {
     private val pickImageLauncher =
     registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         uri?.let { selectedUri ->
+            viewModel.cancelActiveWork(this@MainActivity)
             progressBar.isIndeterminate = true
             progressBar.visibility = View.VISIBLE
             btnAddImageCenter.isEnabled = false
@@ -171,6 +173,7 @@ class MainActivity : AppCompatActivity() {
                 btnAddImageCenter.isEnabled = true
 
                 bitmap?.let { b ->
+                    
                     clearHistoryStack()
 
                     // Release everything belonging to the previous image
@@ -602,54 +605,113 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun observeBackgroundWork() {
-        WorkManager.getInstance(this)
-        .getWorkInfosForUniqueWorkLiveData(ImageProcessingWorker.UNIQUE_WORK_NAME)
+    WorkManager.getInstance(this)
+        .getWorkInfosForUniqueWorkLiveData(
+            ImageProcessingWorker.UNIQUE_WORK_NAME
+        )
         .observe(this) { workInfos ->
-            val workInfo = workInfos?.firstOrNull() ?: return@observe
+
+            val workInfo = workInfos
+                ?.firstOrNull()
+                ?: return@observe
+
+            /*
+             * مهم جدًا:
+             * WorkManager قد يعيد حالات قديمة/متأخرة.
+             * نقبل فقط الـ Work الذي سجله ViewModel كـ active.
+             */
+            if (viewModel.getActiveWorkId() != workInfo.id) {
+                return@observe
+            }
+
             when (workInfo.state) {
-                WorkInfo.State.RUNNING,
-                WorkInfo.State.ENQUEUED -> {
+
+                WorkInfo.State.ENQUEUED,
+                WorkInfo.State.RUNNING -> {
                     progressBar.visibility = View.VISIBLE
                     btnExecute.isEnabled = false
                     btnExecute.alpha = 0.4f
                 }
+
                 WorkInfo.State.SUCCEEDED -> {
+
+                    viewModel.clearActiveWork()
+
                     stopFakeProgress(completed = true)
-                    val resultPath = workInfo.outputData.getString(ImageProcessingWorker.KEY_RESULT_PATH)
+
+                    val resultPath =
+                        workInfo.outputData.getString(
+                            ImageProcessingWorker.KEY_RESULT_PATH
+                        )
+
                     resultPath?.let { path ->
+
                         val resultFile = File(path)
-                        val bitmap = ImageUtils.fileToBitmap(resultFile)
+                        val bitmap =
+                            ImageUtils.fileToBitmap(resultFile)
 
                         if (resultFile.exists()) {
                             resultFile.delete()
                         }
 
                         bitmap?.let { result ->
+
                             releaseCurrentBokehResult()
-                            selectedBitmap?.let { current -> pushToHistory(current) }
+
+                            selectedBitmap?.let { current ->
+                                pushToHistory(current)
+                            }
+
                             selectedBitmap = result
+
                             touchImageView.setImageBitmap(result)
                             touchImageView.clearMask()
+
+                            clearDisplayedMask()
+                            viewModel.clearMask()
+
                             hasMask = false
-                            beforeBitmap = historyStack.peekLast() ?: result
-                            beforeBitmap?.let { before -> beforeAfterSlider.setImages(before, result) }
+
+                            beforeBitmap =
+                                historyStack.peekLast() ?: result
+
+                            beforeBitmap?.let { before ->
+                                beforeAfterSlider.setImages(
+                                    before,
+                                    result
+                                )
+                            }
+
                             switchToPreviewMode()
-                            tvStatus.text = "تمت المعالجة بنجاح! قارن قبل/بعد أو تابع التعديل"
+
+                            tvStatus.text =
+                                "تمت المعالجة بنجاح! قارن قبل/بعد أو تابع التعديل"
                         }
                     }
+
                     updateUiState()
                 }
+
                 WorkInfo.State.FAILED,
                 WorkInfo.State.CANCELLED -> {
+
+                    viewModel.clearActiveWork()
+
                     stopFakeProgress(completed = false)
+
                     progressBar.visibility = View.GONE
-                    showToast("حصل خطأ أثناء المعالجة، حاول تاني")
+
+                    showToast(
+                        "حصل خطأ أثناء المعالجة، حاول تاني"
+                    )
+
                     updateUiState()
                 }
-                else -> {}
+
+                else -> Unit
             }
         }
-    }
+}
 
     // --- حفظ التعديلات وإدارتها (Undo Engine) ---
     private fun pushToHistory(bitmap: Bitmap) {
