@@ -98,6 +98,7 @@ class MainViewModel : ViewModel() {
     private val bokehAutoTuningEstimator = AutoTuningEstimator()
     private val bokehMutex = Mutex()
     private val bokehGeneration = AtomicLong(0L)
+    private var activeWorkId: java.util.UUID? = null
 
     private fun expansionRadiusFor(width: Int, height: Int): Int {
         return (min(width, height) * 0.009f).roundToInt().coerceIn(4, 18)
@@ -143,11 +144,28 @@ class MainViewModel : ViewModel() {
         .setInputData(dataBuilder.build())
         .build()
 
+        activeWorkId = request.id
+
         WorkManager.getInstance(context).enqueueUniqueWork(
             ImageProcessingWorker.UNIQUE_WORK_NAME,
             ExistingWorkPolicy.REPLACE,
             request
         )
+    }
+
+    fun getActiveWorkId(): java.util.UUID? {
+        return activeWorkId
+    }
+
+    fun clearActiveWork() {
+        activeWorkId = null
+    }
+
+    fun cancelActiveWork(context: Context) {
+        activeWorkId = null
+
+        WorkManager.getInstance(context)
+        .cancelUniqueWork(ImageProcessingWorker.UNIQUE_WORK_NAME)
     }
 
     // كل Tap جديد يضيف قناعه إلى القناع المتراكم بدل استبدال النقرة السابقة.
@@ -291,7 +309,6 @@ class MainViewModel : ViewModel() {
 
                 var newMaskFullRes: Bitmap? = null
                 var newMaskWorking: Bitmap? = null
-                
 
                 try {
                     newMaskFullRes = try {
@@ -328,7 +345,6 @@ class MainViewModel : ViewModel() {
                     ) {
                         newMaskFullRes
                     } else {
-                        
 
                         Bitmap.createScaledBitmap(
                             newMaskFullRes!!,
@@ -360,7 +376,6 @@ class MainViewModel : ViewModel() {
 
                     maskSteps.add(newMaskWorking!!)
                     newMaskWorking = null
-                    
 
                     rebuildMaskPipeline(
                         context = context,
